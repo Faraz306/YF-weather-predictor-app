@@ -1,10 +1,15 @@
 import datetime
 import pandas as pd
 import streamlit as st
+import os  # Make sure os is imported right at the top!
 from sklearn.ensemble import RandomForestRegressor
 
-# FIX 1: Point to the parent directory where cities.csv actually lives
-country_df = pd.read_csv("cities.csv")
+# Absolute path fix for cities.csv so the cloud server can find it instantly
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+cities_path = os.path.join(BASE_DIR, "cities.csv")
+
+country_df = pd.read_csv(cities_path)
+
 st.title("Yamaan Faraz YF Weather predictor")
 
 country = st.selectbox("Choose Country", country_df["country"].unique())
