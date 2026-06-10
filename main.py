@@ -15,7 +15,7 @@ predict = st.button("Predict")
 
 if predict:
     with st.spinner(f"Training Yamaan's AI Model specifically for {city}..."):
-    
+
         station_array = filtered_cities.loc[filtered_cities["city_name"] == city, "station_id"].values
 
         if len(station_array) == 0:
@@ -29,8 +29,16 @@ if predict:
         else:
             target_station = raw_station
 
-        # 3. Load the downloaded raw bytes directly into pandas
-        asli_df = pd.read_parquet('daily_weather.parquet')
+        import os
+
+        # 1. This automatically finds the exact folder your app is running in (Local or Cloud!)
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+        # 2. This safely connects the folder path to your data file name
+        parquet_path = os.path.join(BASE_DIR, "daily_weather.parquet")
+
+        # 3. Read the data using the smart path
+        asli_df = pd.read_parquet(parquet_path)
 
         # CRITICAL FILTER: Only train on the selected city's station to avoid crashing Streamlit
         if "station_id" in asli_df.columns:
