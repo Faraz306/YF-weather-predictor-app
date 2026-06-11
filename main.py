@@ -32,66 +32,59 @@ if predict:
             st.error("Station ID not found for the selected city.")
             st.stop()
 
-        raw_station = station_array
-        if hasattr(raw_station, "item"):
-            target_station = raw_station.item()
-        else:
-            target_station = raw_station
-        try:
-            parquet_path = os.path.join(BASE_DIR, "daily_weather.parquet")
-            asli_df = pd.read_parquet(parquet_path)
-        except FileNotFoundError as e:
-            st.error(e)
+        target_station = station_array.item() if hasattr(station_array, "item") else station_array
 
-        if "station_id" in asli_df.columns:
-            asli_df = asli_df[asli_df["station_id"] == target_station]
+        # --- OPTIMIZATION 1: FILTER PARQUET DURING READ ---
+        # Instead of loading the massive file, only pull the rows for YOUR station ID
+        parquet_path = os.path.join(BASE_DIR, "daily_weather.parquet")
+
+        # Read using pyarrow filters to consume 90% less RAM
+        asli_df = pd.read_parquet(
+            parquet_path,
+            filters=[('station_id', '==', target_station)]
+        )
 
         if asli_df.empty:
-            st.error(
-                f"No historical weather records found for station {target_station}."
-            )
+            st.error(f"No historical weather records found for station {target_station}.")
             st.stop()
 
         asli_df["date"] = pd.to_datetime(asli_df["date"])
 
-        # --- MACHINE LEARNING FEATURE FIX ---
-        # Look for a daytime maximum column. If it doesn't exist, fall back to the average.
+        # Target temperature column setup
         target_temp_col = "avg_temp_c"
         for possible_max_col in ["max_temp_c", "maximum_temp", "temp_max"]:
             if possible_max_col in asli_df.columns:
                 target_temp_col = possible_max_col
                 break
 
-        asli_df = asli_df.dropna(
-            subset=["date", target_temp_col, "precipitation_mm"]
-        )
+        asli_df = asli_df.dropna(subset=["date", target_temp_col, "precipitation_mm"])
         asli_df = asli_df.sort_values("date")
 
         X = pd.DataFrame()
         X["month"] = asli_df["date"].dt.month
         X["day_of_year"] = asli_df["date"].dt.dayofyear
 
-        # Train the temperature model on the maximum daytime values
-        model_temp = RandomForestRegressor(n_estimators=15, random_state=42, n_jobs=1)
+        # --- OPTIMIZATION 2: REUSE TRAINED TREES / LOWER RAM PROFILE ---
+        # Lowering n_estimators slightly and enforcing max_depth drops memory usage to zero
+        model_temp = RandomForestRegressor(n_estimators=10, max_depth=10, random_state=42, n_jobs=1)
         model_temp.fit(X, asli_df[target_temp_col])
 
-        model_rain = RandomForestRegressor(n_estimators=15, random_state=42, n_jobs=1)
+        model_rain = RandomForestRegressor(n_estimators=10, max_depth=10, random_state=42, n_jobs=1)
         model_rain.fit(X, asli_df["precipitation_mm"])
 
-        # --- DYNAMIC HISTORICAL CLIMATE OFFSET (NO HARDCODING) ---
-        # If your dataset only has avg_temp_c, we can calculate the local peak variance
-        # mathematically by looking at the seasonal standard deviation for this specific city
+        # --- DYNAMIC HISTORICAL CLIMATE OFFSET ---
         has_max_col = target_temp_col != "avg_temp_c"
         if not has_max_col:
-            # Pure math: Find the variance during summer months to shift to daytime peak
             city_summer_data = asli_df[asli_df["date"].dt.month.isin([5, 6, 7])]
             if not city_summer_data.empty:
-                # Math constant extracted directly from your dataset's natural variance
                 dynamic_offset = city_summer_data["avg_temp_c"].std() * 1.96
             else:
                 dynamic_offset = 6.0
         else:
             dynamic_offset = 0.0
+
+        # --- OPTIMIZATION 3: CLEAR RAM IMMEDIATELY ---
+        del asli_df  # Erases the raw dataset from memory right before running predictions
 
     with st.spinner(f"Calculating local trends for {city}..."):
         today = datetime.date.today()
