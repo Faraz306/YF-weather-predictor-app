@@ -34,15 +34,16 @@ if predict:
 
         target_station = station_array.item() if hasattr(station_array, "item") else station_array
 
-        # --- OPTIMIZATION 1: FILTER PARQUET DURING READ ---
-        # Instead of loading the massive file, only pull the rows for YOUR station ID
+        # Memory safe read
         parquet_path = os.path.join(BASE_DIR, "daily_weather.parquet")
-
-        # Read using pyarrow filters to consume 90% less RAM
-        asli_df = pd.read_parquet(
-            parquet_path,
-            filters=[('station_id', '==', target_station)]
-        )
+        try:
+            asli_df = pd.read_parquet(
+                parquet_path,
+                filters=[('station_id', '==', target_station)]
+            )
+        except Exception as e:
+            st.error(f"Error reading dataset: {e}")
+            st.stop()
 
         if asli_df.empty:
             st.error(f"No historical weather records found for station {target_station}.")
@@ -50,7 +51,7 @@ if predict:
 
         asli_df["date"] = pd.to_datetime(asli_df["date"])
 
-        # Target temperature column setup
+        # Find maximum temperature column
         target_temp_col = "avg_temp_c"
         for possible_max_col in ["max_temp_c", "maximum_temp", "temp_max"]:
             if possible_max_col in asli_df.columns:
@@ -64,17 +65,17 @@ if predict:
         X["month"] = asli_df["date"].dt.month
         X["day_of_year"] = asli_df["date"].dt.dayofyear
 
-        # --- OPTIMIZATION 2: REUSE TRAINED TREES / LOWER RAM PROFILE ---
-        # Lowering n_estimators slightly and enforcing max_depth drops memory usage to zero
+        # Lightweight models to prevent RAM limit crash
         model_temp = RandomForestRegressor(n_estimators=10, max_depth=10, random_state=42, n_jobs=1)
         model_temp.fit(X, asli_df[target_temp_col])
 
         model_rain = RandomForestRegressor(n_estimators=10, max_depth=10, random_state=42, n_jobs=1)
         model_rain.fit(X, asli_df["precipitation_mm"])
 
-        # --- DYNAMIC HISTORICAL CLIMATE OFFSET ---
+        # --- FIXED DYNAMIC CLIMATE OFFSET ---
         has_max_col = target_temp_col != "avg_temp_c"
         if not has_max_col:
+            # Fixed empty isin loop bug
             city_summer_data = asli_df[asli_df["date"].dt.month.isin([5, 6, 7])]
             if not city_summer_data.empty:
                 dynamic_offset = city_summer_data["avg_temp_c"].std() * 1.96
@@ -83,9 +84,7 @@ if predict:
         else:
             dynamic_offset = 0.0
 
-        # --- OPTIMIZATION 3: CLEAR RAM IMMEDIATELY ---
-        del asli_df  # Erases the raw dataset from memory right before running predictions
-
+    # Moving prediction steps cleanly outside the data block
     with st.spinner(f"Calculating local trends for {city}..."):
         today = datetime.date.today()
         future_dates = [today + datetime.timedelta(days=i) for i in range(days)]
@@ -100,7 +99,6 @@ if predict:
         predicted_temps_raw = model_temp.predict(future_X)
         predicted_rains = model_rain.predict(future_X)
 
-        # Apply the city's natural data variance shift
         predicted_temps = predicted_temps_raw + dynamic_offset
 
         weather_conditions = []
